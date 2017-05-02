@@ -25,7 +25,8 @@ class CopyMapping(object):
         quote_character=None,
         null=None,
         encoding=None,
-        static_mapping=None
+        static_mapping=None,
+        direct_mode=False,
     ):
         # Set the required arguments
         self.model = model
@@ -44,6 +45,7 @@ class CopyMapping(object):
         else:
             self.static_mapping = {}
 
+        self.direct_mode = direct_mode
         # Line up the database connection
         if using is not None:
             self.using = using
@@ -85,13 +87,14 @@ class CopyMapping(object):
         # Connect to the database
         with self.conn.cursor() as c:
             self.create(c)
-            self.copy(c)
-            insert_count = self.insert(c)
+            total_count = self.copy(c)
+            if not self.direct_mode:
+                total_count = self.insert(c)
             self.drop(c)
 
         if not silent:
             stream.write(
-                "%s records loaded\n" % intcomma(insert_count)
+                "%s records loaded\n" % intcomma(total_count)
             )
 
     def get_field(self, name):
@@ -184,13 +187,18 @@ class CopyMapping(object):
 
         Returns SQL that can be run.
         """
+        if self.direct_mode:
+            target_table = self.model._meta.db_table
+        else:
+            target_table = self.temp_table_name
+
         sql = """
             COPY "%(db_table)s" (%(header_list)s)
             FROM STDIN
             WITH CSV HEADER %(extra_options)s;
         """
         options = {
-            'db_table': self.temp_table_name,
+            'db_table': target_table,
             'extra_options': '',
             'header_list': ", ".join([
                 '"%s"' % h for h in self.headers
@@ -222,8 +230,10 @@ class CopyMapping(object):
         self.pre_copy(cursor)
         copy_sql = self.prep_copy()
         fp = open(self.csv_path, 'r')
-        cursor.copy_expert(copy_sql, fp)
+        copied = cursor.copy_expert(copy_sql, fp)
         self.post_copy(cursor)
+
+        return copied
 
     def post_copy(self, cursor):
         pass
